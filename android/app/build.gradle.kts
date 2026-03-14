@@ -17,7 +17,7 @@ android {
         versionName = "1.0"
 
         // Backend URL — override in local.properties or build flavor for prod
-        buildConfigField("String", "API_BASE_URL", "\"https://your-app.up.railway.app/\"")
+        buildConfigField("String", "API_BASE_URL", "\"https://mad-apple-fitness-app-production.up.railway.app/\"")
     }
 
     buildFeatures {
