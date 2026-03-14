@@ -138,6 +138,21 @@ async def debug_page(x_admin_secret: str = Header(...)):
     except Exception as e:
         wp_result = {"error": str(e)}
 
+    # Try raw HTTP fetch (no JS) to see if content is server-rendered
+    raw_html_lines = []
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+        }
+        async with httpx.AsyncClient(timeout=15, headers=headers, follow_redirects=True) as client:
+            r = await client.get(WOD_URL)
+            raw_text = r.text
+            raw_html_lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+    except Exception as e:
+        raw_html_lines = [f"ERROR: {e}"]
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
@@ -146,14 +161,14 @@ async def debug_page(x_admin_secret: str = Header(...)):
         )
         page = await context.new_page()
         await page.goto(WOD_URL, wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(5000)
+        await page.wait_for_timeout(8000)
         content = await page.inner_text("body")
-        html_snippet = await page.inner_html("body")
         await browser.close()
-    lines = [l.strip() for l in content.splitlines() if l.strip()]
+    pw_lines = [l.strip() for l in content.splitlines() if l.strip()]
     return {
-        "line_count": len(lines),
-        "lines": lines[:200],
-        "html_snippet": html_snippet[:3000],
+        "playwright_line_count": len(pw_lines),
+        "playwright_lines": pw_lines[:100],
+        "raw_http_line_count": len(raw_html_lines),
+        "raw_http_snippet": raw_html_lines[:100],
         "wp_api": wp_result,
     }
