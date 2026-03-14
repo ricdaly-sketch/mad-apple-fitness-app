@@ -123,14 +123,37 @@ async def debug_page(x_admin_secret: str = Header(...)):
         raise HTTPException(status_code=403, detail="Forbidden")
     from playwright.async_api import async_playwright
     from scraper import WOD_URL
+    import httpx
+
+    # Also try the WordPress REST API
+    wp_api_url = "https://madapplefitness.com/wp-json/wp/v2/posts?per_page=5&_fields=id,title,content,date"
+    wp_result = None
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(wp_api_url)
+            if r.status_code == 200:
+                wp_result = r.json()
+            else:
+                wp_result = {"status": r.status_code}
+    except Exception as e:
+        wp_result = {"error": str(e)}
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (compatible; MadAppleFitnessBot/1.0)"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 800},
         )
         page = await context.new_page()
-        await page.goto(WOD_URL, wait_until="networkidle", timeout=30000)
+        await page.goto(WOD_URL, wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(5000)
         content = await page.inner_text("body")
+        html_snippet = await page.inner_html("body")
         await browser.close()
     lines = [l.strip() for l in content.splitlines() if l.strip()]
-    return {"line_count": len(lines), "lines": lines[:200]}
+    return {
+        "line_count": len(lines),
+        "lines": lines[:200],
+        "html_snippet": html_snippet[:3000],
+        "wp_api": wp_result,
+    }
