@@ -125,33 +125,23 @@ async def debug_page(x_admin_secret: str = Header(...)):
     from scraper import WOD_URL
     import httpx
 
-    # Also try the WordPress REST API
-    wp_api_url = "https://madapplefitness.com/wp-json/wp/v2/posts?per_page=5&_fields=id,title,content,date"
-    wp_result = None
+    KEYWORDS = ["monday", "tuesday", "wednesday", "thursday", "friday", "amrap", "emom", "for time", "strength", "workout", "competitor", "hyrox"]
+    raw_keyword_hits = []
+    wp_page_result = None
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(wp_api_url)
-            if r.status_code == 200:
-                wp_result = r.json()
-            else:
-                wp_result = {"status": r.status_code}
-    except Exception as e:
-        wp_result = {"error": str(e)}
-
-    # Try raw HTTP fetch (no JS) to see if content is server-rendered
-    raw_html_lines = []
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-        }
         async with httpx.AsyncClient(timeout=15, headers=headers, follow_redirects=True) as client:
             r = await client.get(WOD_URL)
-            raw_text = r.text
-            raw_html_lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+            for i, line in enumerate(r.text.splitlines()):
+                if any(kw in line.lower() for kw in KEYWORDS):
+                    raw_keyword_hits.append({"line": i, "text": line.strip()[:400]})
+            r2 = await client.get("https://madapplefitness.com/wp-json/wp/v2/pages/247?_fields=title,content")
+            wp_page_result = r2.json() if r2.status_code == 200 else {"status": r2.status_code}
     except Exception as e:
-        raw_html_lines = [f"ERROR: {e}"]
+        raw_keyword_hits = [{"error": str(e)}]
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -168,7 +158,6 @@ async def debug_page(x_admin_secret: str = Header(...)):
     return {
         "playwright_line_count": len(pw_lines),
         "playwright_lines": pw_lines[:100],
-        "raw_http_line_count": len(raw_html_lines),
-        "raw_http_snippet": raw_html_lines[:100],
-        "wp_api": wp_result,
+        "raw_keyword_hits": raw_keyword_hits[:30],
+        "wp_page_247": wp_page_result,
     }
