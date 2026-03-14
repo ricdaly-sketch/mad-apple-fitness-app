@@ -65,7 +65,10 @@ class WorkoutDetailFragment : Fragment() {
                 binding.contentGroup.visibility = View.VISIBLE
                 binding.textWorkoutTitle.text = state.workout.title
                 binding.textWorkoutType.text = state.workout.workoutType
-                binding.textWorkoutDescription.text = state.workout.description
+                binding.textWorkoutDescription.text = WorkoutFormatter.format(
+                    state.workout.description,
+                    state.workout.title
+                )
                 binding.textDayLabel.text = state.workout.dayOfWeek
             }
             is DetailUiState.Error -> {
