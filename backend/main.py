@@ -65,6 +65,17 @@ async def run_scrape_and_upsert() -> None:
 async def lifespan(app: FastAPI):
     create_tables()
     start_scheduler(run_scrape_and_upsert)
+    # Scrape on startup if DB is empty (handles fresh deploys losing SQLite data)
+    import asyncio
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        count = db.query(Workout).count()
+    finally:
+        db.close()
+    if count == 0:
+        logger.info("DB is empty on startup — triggering initial scrape")
+        asyncio.create_task(run_scrape_and_upsert())
     yield
     stop_scheduler()
 
