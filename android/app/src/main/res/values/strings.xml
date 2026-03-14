@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Mad Apple Tracker</string>
+    <string name="error_load_workouts">Couldn\'t load workouts. Check your connection.</string>
+</resources>

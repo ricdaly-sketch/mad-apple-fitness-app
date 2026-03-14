@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/nav_graph"
+    app:startDestination="@id/thisWeekFragment">
+
+    <fragment
+        android:id="@+id/thisWeekFragment"
+        android:name="com.madapple.tracker.ui.thisweek.ThisWeekFragment"
+        android:label="This Week"
+        tools:layout="@layout/fragment_this_week">
+        <action
+            android:id="@+id/action_thisWeek_to_detail"
+            app:destination="@id/workoutDetailFragment" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/workoutDetailFragment"
+        android:name="com.madapple.tracker.ui.detail.WorkoutDetailFragment"
+        android:label="Workout"
+        tools:layout="@layout/fragment_workout_detail">
+        <argument
+            android:name="workoutId"
+            app:argType="integer" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/historyFragment"
+        android:name="com.madapple.tracker.ui.history.HistoryFragment"
+        android:label="My History"
+        tools:layout="@layout/fragment_history" />
+
+</navigation>

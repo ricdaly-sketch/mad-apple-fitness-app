@@ -1,0 +1,116 @@
+import logging
+import os
+from contextlib import asynccontextmanager
+from datetime import date, timedelta
+
+from fastapi import FastAPI, Depends, HTTPException, Header, Query
+from sqlalchemy.orm import Session
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+from database import get_db, create_tables
+from models import Workout, WorkoutResponse
+from scraper import scrape_all_tracks
+from scheduler import start_scheduler, stop_scheduler
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+ADMIN_SECRET = os.getenv("ADMIN_SECRET", "")
+
+
+async def run_scrape_and_upsert() -> None:
+    """Scrape all tracks and upsert into the database."""
+    from database import SessionLocal
+
+    logger.info("Running scheduled scrape...")
+    workouts = await scrape_all_tracks()
+    if not workouts:
+        logger.warning("Scrape returned no workouts")
+        return
+
+    db = SessionLocal()
+    try:
+        for w in workouts:
+            stmt = (
+                sqlite_insert(Workout)
+                .values(
+                    track=w.track,
+                    day_of_week=w.day_of_week,
+                    week_start_date=w.week_start_date,
+                    title=w.title,
+                    workout_type=w.workout_type,
+                    description=w.description,
+                )
+                .on_conflict_do_update(
+                    index_elements=["track", "week_start_date", "day_of_week"],
+                    set_={
+                        "title": w.title,
+                        "workout_type": w.workout_type,
+                        "description": w.description,
+                    },
+                )
+            )
+            db.execute(stmt)
+        db.commit()
+        logger.info("Upserted %d workouts into database", len(workouts))
+    except Exception as exc:
+        db.rollback()
+        logger.error("DB upsert failed: %s", exc)
+        raise
+    finally:
+        db.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    create_tables()
+    start_scheduler(run_scrape_and_upsert)
+    yield
+    stop_scheduler()
+
+
+app = FastAPI(title="Mad Apple Fitness API", lifespan=lifespan)
+
+
+def _current_week_monday() -> date:
+    today = date.today()
+    return today - timedelta(days=today.weekday())
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/workouts/week", response_model=list[WorkoutResponse])
+def get_week_workouts(
+    track: str = Query(..., description="Track: wod | competitor | hyrox"),
+    db: Session = Depends(get_db),
+):
+    week_start = _current_week_monday()
+    workouts = (
+        db.query(Workout)
+        .filter(Workout.track == track, Workout.week_start_date == week_start)
+        .order_by(Workout.id)
+        .all()
+    )
+    if not workouts:
+        raise HTTPException(status_code=503, detail="No workouts available for this week yet")
+    return workouts
+
+
+@app.get("/workouts/{workout_id}", response_model=WorkoutResponse)
+def get_workout(workout_id: int, db: Session = Depends(get_db)):
+    workout = db.query(Workout).filter(Workout.id == workout_id).first()
+    if not workout:
+        raise HTTPException(status_code=404, detail="Workout not found")
+    return workout
+
+
+@app.post("/admin/scrape", status_code=202)
+async def admin_scrape(x_admin_secret: str = Header(...)):
+    if not ADMIN_SECRET or x_admin_secret != ADMIN_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    import asyncio
+    asyncio.create_task(run_scrape_and_upsert())
+    return {"message": "Scrape triggered"}
