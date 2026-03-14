@@ -114,3 +114,23 @@ async def admin_scrape(x_admin_secret: str = Header(...)):
     import asyncio
     asyncio.create_task(run_scrape_and_upsert())
     return {"message": "Scrape triggered"}
+
+
+@app.get("/admin/debug-page")
+async def debug_page(x_admin_secret: str = Header(...)):
+    """Return raw page text from the WOD URL to help debug scraper issues."""
+    if not ADMIN_SECRET or x_admin_secret != ADMIN_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    from playwright.async_api import async_playwright
+    from scraper import WOD_URL
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (compatible; MadAppleFitnessBot/1.0)"
+        )
+        page = await context.new_page()
+        await page.goto(WOD_URL, wait_until="networkidle", timeout=30000)
+        content = await page.inner_text("body")
+        await browser.close()
+    lines = [l.strip() for l in content.splitlines() if l.strip()]
+    return {"line_count": len(lines), "lines": lines[:200]}

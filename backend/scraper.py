@@ -12,6 +12,8 @@ TRACK_LABELS = {
 }
 
 DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+DAYS_OF_WEEK_UPPER = [d.upper() for d in DAYS_OF_WEEK]
+DAYS_NORMALISED = {d.upper(): d for d in DAYS_OF_WEEK}
 
 WOD_URL = "https://madapplefitness.com/workout-of-the-day/"
 
@@ -100,12 +102,12 @@ async def _extract_workouts_from_page(page: Page, track: str, week_start: date) 
         ))
 
     for line in lines:
-        # Check if line is a day heading
-        line_title = line.strip().rstrip(":").strip()
-        if line_title in DAYS_OF_WEEK:
+        # Check if line is a day heading (case-insensitive)
+        line_title = line.strip().rstrip(":").strip().upper()
+        if line_title in DAYS_NORMALISED:
             if current_day and current_lines:
                 flush_day(current_day, current_lines)
-            current_day = line_title
+            current_day = DAYS_NORMALISED[line_title]
             current_lines = []
         elif current_day:
             current_lines.append(line)
