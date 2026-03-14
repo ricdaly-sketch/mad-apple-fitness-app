@@ -5,17 +5,20 @@ from playwright.async_api import async_playwright, Page
 
 logger = logging.getLogger(__name__)
 
-TRACK_LABELS = {
-    "wod": "Workout of the Day",
-    "competitor": "Competitor Track",
-    "hyrox": "Hyrox",
-}
+PUSHPRESS_URL = "https://train.pushpress.com/widgets/workoutOfDay?tenantId=63104D1E-CFCE-4AFE-BA0B-7AB2FC96FD07"
+
+# Used externally by main.py
+WOD_URL = PUSHPRESS_URL
 
 DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-DAYS_OF_WEEK_UPPER = [d.upper() for d in DAYS_OF_WEEK]
-DAYS_NORMALISED = {d.upper(): d for d in DAYS_OF_WEEK}
 
-WOD_URL = "https://madapplefitness.com/workout-of-the-day/"
+# Section headers that mark the start of each track in PushPress output.
+# WOD header starts with "**" artifact from the widget.
+TRACK_HEADERS = {
+    "wod": ["workout of the day"],
+    "competitor": ["competitor track"],
+    "hyrox": ["hyrox"],
+}
 
 
 @dataclass
@@ -33,96 +36,85 @@ def _current_week_monday() -> date:
     return today - timedelta(days=today.weekday())
 
 
-async def _select_track(page: Page, track: str) -> bool:
+def _parse_tracks_from_lines(lines: list[str]) -> dict[str, str]:
     """
-    Attempt to select a track on the page. The site uses Divi + JS so we look
-    for tabs, buttons, or links whose text matches the track label.
-    Returns True if found and clicked, False otherwise.
+    Given the text lines for a single day, split into per-track content.
+    Returns dict mapping track key -> block of text.
     """
-    label = TRACK_LABELS[track]
-    # Try common patterns: tab buttons, anchor links, dropdown items
-    selectors = [
-        f"text={label}",
-        f"[data-track='{track}']",
-        f"button:has-text('{label}')",
-        f"a:has-text('{label}')",
-        f"li:has-text('{label}')",
-        f".tab:has-text('{label}')",
-    ]
-    for selector in selectors:
-        try:
-            el = page.locator(selector).first
-            if await el.count() > 0:
-                await el.click()
-                await page.wait_for_load_state("networkidle", timeout=5000)
-                logger.info("Selected track '%s' via selector: %s", label, selector)
-                return True
-        except Exception:
-            continue
-    logger.warning("Could not find track selector for '%s' — will scrape visible content", label)
-    return False
+    current_track = None
+    track_lines: dict[str, list[str]] = {"wod": [], "competitor": [], "hyrox": []}
 
-
-async def _extract_workouts_from_page(page: Page, track: str, week_start: date) -> list[ScrapedWorkout]:
-    """
-    Extract workouts from the currently visible page content.
-    Looks for day headings followed by workout blocks.
-    """
-    workouts: list[ScrapedWorkout] = []
-
-    # Get all text blocks — we'll parse them looking for day names
-    content = await page.inner_text("body")
-    lines = [line.strip() for line in content.splitlines() if line.strip()]
-
-    current_day = None
-    current_lines: list[str] = []
-
-    def flush_day(day: str, block_lines: list[str]) -> None:
-        if not block_lines:
-            return
-        # First non-empty line is the title/type, rest is description
-        title_line = block_lines[0]
-        description = "\n".join(block_lines)
-
-        # Infer workout_type from common keywords in the title
-        workout_type = "WOD"
-        title_upper = title_line.upper()
-        for kw in ["AMRAP", "FOR TIME", "EMOM", "STRENGTH", "SKILL", "HYROX", "CHIPPER", "TABATA"]:
-            if kw in title_upper:
-                workout_type = kw.title()
+    for line in lines:
+        low = line.lower().strip().lstrip("*").strip()
+        matched = False
+        for track, headers in TRACK_HEADERS.items():
+            if any(low == h for h in headers):
+                current_track = track
+                matched = True
                 break
+        if matched:
+            continue
+        if current_track:
+            track_lines[current_track].append(line)
 
+    return {t: "\n".join(ls).strip() for t, ls in track_lines.items() if ls}
+
+
+def _infer_workout_type(text: str) -> str:
+    upper = text.upper()
+    for kw in ["AMRAP", "FOR TIME", "EMOM", "STRENGTH", "SKILL", "CHIPPER", "TABATA", "HYROX"]:
+        if kw in upper:
+            return kw.title()
+    return "WOD"
+
+
+async def _scrape_day(page: Page, day: str, week_start: date) -> list[ScrapedWorkout]:
+    """Click the tab for `day`, wait for content, then extract all tracks."""
+    try:
+        tab = page.locator(f"div.day-label:has-text('{day}'), button:has-text('{day}'), .tab:has-text('{day}')")
+        # PushPress uses mat-button tabs — find by text
+        tab = page.get_by_role("tab", name=day)
+        if await tab.count() == 0:
+            # Fallback: any clickable element with day text
+            tab = page.locator(f"text={day}").first
+        await tab.click()
+        await page.wait_for_timeout(2000)
+    except Exception as e:
+        logger.warning("Could not click tab for %s: %s", day, e)
+
+    content = await page.inner_text("body")
+    lines = [l.strip() for l in content.splitlines() if l.strip()]
+
+    # Drop navigation header lines (chevron, date, day tabs)
+    # Content starts after the last day-of-week tab label
+    start_idx = 0
+    for i, line in enumerate(lines):
+        if line in DAYS_OF_WEEK:
+            start_idx = i + 1  # keep updating; after last tab label is content
+    content_lines = lines[start_idx:]
+
+    track_content = _parse_tracks_from_lines(content_lines)
+    workouts = []
+    for track, text in track_content.items():
+        if not text:
+            continue
+        first_line = text.splitlines()[0] if text else ""
         workouts.append(ScrapedWorkout(
             track=track,
             day_of_week=day,
             week_start_date=week_start,
-            title=title_line[:256],
-            workout_type=workout_type,
-            description=description[:4096],
+            title=first_line[:256],
+            workout_type=_infer_workout_type(text),
+            description=text[:4096],
         ))
-
-    for line in lines:
-        # Check if line is a day heading (case-insensitive)
-        line_title = line.strip().rstrip(":").strip().upper()
-        if line_title in DAYS_NORMALISED:
-            if current_day and current_lines:
-                flush_day(current_day, current_lines)
-            current_day = DAYS_NORMALISED[line_title]
-            current_lines = []
-        elif current_day:
-            current_lines.append(line)
-
-    # Flush last day
-    if current_day and current_lines:
-        flush_day(current_day, current_lines)
-
-    logger.info("Extracted %d workouts for track '%s'", len(workouts), track)
+    logger.info("Day %s: extracted %d tracks", day, len(workouts))
     return workouts
 
 
 async def scrape_all_tracks() -> list[ScrapedWorkout]:
     """
-    Main entry point. Scrapes all three tracks and returns a flat list of ScrapedWorkout objects.
+    Main entry point. Loads PushPress widget, iterates through each day tab,
+    and extracts workouts for all three tracks.
     """
     week_start = _current_week_monday()
     all_workouts: list[ScrapedWorkout] = []
@@ -130,25 +122,22 @@ async def scrape_all_tracks() -> list[ScrapedWorkout]:
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (compatible; MadAppleFitnessBot/1.0)"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 2400},
         )
+        page = await context.new_page()
+        logger.info("Loading PushPress widget")
+        await page.goto(PUSHPRESS_URL, wait_until="networkidle", timeout=30000)
+        await page.wait_for_timeout(5000)
 
-        for track in TRACK_LABELS:
+        for day in DAYS_OF_WEEK:
             try:
-                page = await context.new_page()
-                logger.info("Loading WOD page for track: %s", track)
-                await page.goto(WOD_URL, wait_until="networkidle", timeout=30000)
-
-                # Only try to switch track if it's not WOD (default view)
-                if track != "wod":
-                    await _select_track(page, track)
-
-                workouts = await _extract_workouts_from_page(page, track, week_start)
+                workouts = await _scrape_day(page, day, week_start)
                 all_workouts.extend(workouts)
-                await page.close()
             except Exception as exc:
-                logger.error("Failed to scrape track '%s': %s", track, exc)
+                logger.error("Failed to scrape day '%s': %s", day, exc)
 
         await browser.close()
 
+    logger.info("Total workouts scraped: %d", len(all_workouts))
     return all_workouts
