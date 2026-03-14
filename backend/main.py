@@ -125,39 +125,24 @@ async def debug_page(x_admin_secret: str = Header(...)):
     from scraper import WOD_URL
     import httpx
 
-    KEYWORDS = ["monday", "tuesday", "wednesday", "thursday", "friday", "amrap", "emom", "for time", "strength", "workout", "competitor", "hyrox"]
-    raw_keyword_hits = []
-    wp_page_result = None
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=15, headers=headers, follow_redirects=True) as client:
-            r = await client.get(WOD_URL)
-            for i, line in enumerate(r.text.splitlines()):
-                if any(kw in line.lower() for kw in KEYWORDS):
-                    raw_keyword_hits.append({"line": i, "text": line.strip()[:400]})
-            r2 = await client.get("https://madapplefitness.com/wp-json/wp/v2/pages/247?_fields=title,content")
-            wp_page_result = r2.json() if r2.status_code == 200 else {"status": r2.status_code}
-    except Exception as e:
-        raw_keyword_hits = [{"error": str(e)}]
+    PUSHPRESS_URL = "https://train.pushpress.com/widgets/workoutOfDay?tenantId=63104D1E-CFCE-4AFE-BA0B-7AB2FC96FD07"
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 800},
+            viewport={"width": 1280, "height": 2400},
         )
         page = await context.new_page()
-        await page.goto(WOD_URL, wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(8000)
+        await page.goto(PUSHPRESS_URL, wait_until="networkidle", timeout=30000)
+        await page.wait_for_timeout(5000)
         content = await page.inner_text("body")
+        html = await page.inner_html("body")
         await browser.close()
-    pw_lines = [l.strip() for l in content.splitlines() if l.strip()]
+
+    lines = [l.strip() for l in content.splitlines() if l.strip()]
     return {
-        "playwright_line_count": len(pw_lines),
-        "playwright_lines": pw_lines[:100],
-        "raw_keyword_hits": raw_keyword_hits[:30],
-        "wp_page_247": wp_page_result,
+        "pushpress_line_count": len(lines),
+        "pushpress_lines": lines[:200],
+        "pushpress_html_snippet": html[:5000],
     }
