@@ -7,20 +7,21 @@ from config import CLOB_BASE_URL, MAX_LATENCY_MS
 
 
 class PolymarketClient:
-    def __init__(self, api_key: str, api_secret: str, passphrase: str):
-        if not all([api_key, api_secret, passphrase]):
+    def __init__(self, api_key: str, wallet_address: str):
+        if not api_key:
             raise ValueError(
-                "POLY_API_KEY, POLY_API_SECRET, and POLY_API_PASSPHRASE must all be set. "
-                "Check your .env file."
+                "POLY_API_KEY must be set. Check your .env file."
+            )
+        if not wallet_address:
+            raise ValueError(
+                "POLY_WALLET_ADDRESS must be set. Check your .env file."
             )
         self._api_key = api_key
-        self._api_secret = api_secret
-        self._passphrase = passphrase
+        self._wallet_address = wallet_address
         self.session = requests.Session()
         self.session.headers.update({
-            "POLY_API_KEY": api_key,
-            "POLY_SECRET": api_secret,
-            "POLY_PASSPHRASE": passphrase,
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
         })
 
     def _get(self, path: str, params: Optional[dict] = None) -> dict:
@@ -59,6 +60,7 @@ class PolymarketClient:
             "size": size,
             "side": side,
             "type": "GTC",
+            "maker_address": self._wallet_address,
         }
         resp = self.session.post(f"{CLOB_BASE_URL}/order", json=payload, timeout=5)
         resp.raise_for_status()

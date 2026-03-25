@@ -59,7 +59,7 @@ def main() -> None:
     log = logging.getLogger(__name__)
 
     if not paper_mode:
-        missing = [k for k in ("POLY_API_KEY", "POLY_API_SECRET", "POLY_API_PASSPHRASE", "PRIVATE_KEY")
+        missing = [k for k in ("POLY_API_KEY", "POLY_WALLET_ADDRESS", "PRIVATE_KEY")
                    if not os.getenv(k)]
         if missing:
             log.critical(f"Live mode requires these env vars: {missing}")
@@ -68,8 +68,7 @@ def main() -> None:
     try:
         client = PolymarketClient(
             api_key=os.getenv("POLY_API_KEY", ""),
-            api_secret=os.getenv("POLY_API_SECRET", ""),
-            passphrase=os.getenv("POLY_API_PASSPHRASE", ""),
+            wallet_address=os.getenv("POLY_WALLET_ADDRESS", ""),
         )
     except ValueError as exc:
         log.critical(str(exc))
