@@ -4,3 +4,4 @@ py-clob-client>=0.17.0
 websocket-client>=1.7.0
 schedule>=1.2.1
 colorlog>=6.8.2
+rich>=13.7.0
