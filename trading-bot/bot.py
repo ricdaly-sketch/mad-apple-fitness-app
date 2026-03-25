@@ -22,14 +22,13 @@ from strategy import find_opportunities
 from trader import Trader
 
 console = Console()
-MAX_PAGINATION_PAGES = 100
+MAX_PAGINATION_PAGES = 5   # ~500 markets max per scan to keep it fast
 MAX_LOG_LINES = 12
 
 log_lines: list[str] = []
 
 
 class UIHandler(logging.Handler):
-    """Captures log records into an in-memory list for the dashboard."""
     def emit(self, record: logging.LogRecord) -> None:
         level = record.levelname
         msg = self.format(record)
@@ -47,7 +46,8 @@ def setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 
-def fetch_all_markets(client: PolymarketClient) -> list[dict]:
+def fetch_markets(client: PolymarketClient) -> list[dict]:
+    """Fetch up to MAX_PAGINATION_PAGES pages of active markets."""
     markets = []
     cursor = ""
     for _ in range(MAX_PAGINATION_PAGES):
@@ -72,7 +72,6 @@ def build_layout(trader: Trader, scan: int, mode: str,
         Layout(name="opportunities"),
     )
 
-    # ── Header ──────────────────────────────────────────────────────────
     pnl = trader.realised_pnl
     pnl_color = "green" if pnl >= 0 else "red"
     open_pos = sum(1 for p in trader.positions if p.is_open)
@@ -84,10 +83,8 @@ def build_layout(trader: Trader, scan: int, mode: str,
     header_text.append(f"PnL=${pnl:+.2f}", style=f"bold {pnl_color}")
     layout["header"].update(Panel(header_text, box=box.HORIZONTALS))
 
-    # ── Open Positions ───────────────────────────────────────────────────
-    pos_table = Table(box=box.SIMPLE, show_header=True, header_style="bold magenta",
-                      expand=True)
-    pos_table.add_column("Market", style="white", no_wrap=False, ratio=5)
+    pos_table = Table(box=box.SIMPLE, show_header=True, header_style="bold magenta", expand=True)
+    pos_table.add_column("Market", ratio=5)
     pos_table.add_column("Side", justify="center", ratio=1)
     pos_table.add_column("Entry", justify="right", ratio=1)
     pos_table.add_column("Size", justify="right", ratio=1)
@@ -110,9 +107,7 @@ def build_layout(trader: Trader, scan: int, mode: str,
         Panel(pos_table, title=f"[bold]Open Positions ({open_pos})[/bold]", box=box.ROUNDED)
     )
 
-    # ── Latest Opportunities ─────────────────────────────────────────────
-    opp_table = Table(box=box.SIMPLE, show_header=True, header_style="bold magenta",
-                      expand=True)
+    opp_table = Table(box=box.SIMPLE, show_header=True, header_style="bold magenta", expand=True)
     opp_table.add_column("Market", ratio=5)
     opp_table.add_column("Side", justify="center", ratio=1)
     opp_table.add_column("Price", justify="right", ratio=1)
@@ -141,7 +136,6 @@ def build_layout(trader: Trader, scan: int, mode: str,
               box=box.ROUNDED)
     )
 
-    # ── Logs ─────────────────────────────────────────────────────────────
     log_text = Text()
     for line in log_lines:
         log_text.append_text(Text.from_markup(line + "\n"))
@@ -190,21 +184,13 @@ def main() -> None:
         while True:
             scan_count += 1
             try:
-                markets = fetch_all_markets(client)
+                log.info(f"Scan #{scan_count}: fetching markets...")
+                markets = fetch_markets(client)
                 markets_count = len(markets)
-                log.info(f"Scan #{scan_count}: loaded {markets_count} markets")
+                log.info(f"Loaded {markets_count} markets — analysing prices")
 
-                orderbooks: dict[str, dict] = {}
-                for market in markets:
-                    for token in market.get("tokens", []):
-                        token_id = token.get("token_id")
-                        if token_id:
-                            try:
-                                orderbooks[token_id] = client.get_orderbook(token_id)
-                            except Exception:
-                                pass
-
-                latest_opps = find_opportunities(markets, orderbooks)
+                # Use prices embedded in market data directly (no per-token API calls)
+                latest_opps = find_opportunities(markets)
 
                 if latest_opps:
                     log.info(f"Found {len(latest_opps)} arbitrage windows")
@@ -213,13 +199,16 @@ def main() -> None:
                 else:
                     log.info("No opportunities above min edge")
 
+                # Use embedded token prices for exit checks too
                 current_prices: dict[str, float] = {}
-                for tid, book in orderbooks.items():
-                    bids = book.get("bids") or []
-                    if bids:
+                for market in markets:
+                    for token in market.get("tokens", []):
+                        tid = token.get("token_id")
                         try:
-                            current_prices[tid] = float(bids[0]["price"])
-                        except (KeyError, ValueError, TypeError):
+                            price = float(token.get("price", 0))
+                            if tid and 0 < price <= 1:
+                                current_prices[tid] = price
+                        except (ValueError, TypeError):
                             pass
                 trader.check_and_close_positions(current_prices)
 
