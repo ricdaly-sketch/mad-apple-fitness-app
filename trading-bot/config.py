@@ -1,7 +1,7 @@
 # Bot configuration
 
 MIN_EDGE = 0.03          # Minimum price/probability gap to open a trade
-MAX_LATENCY_MS = 30      # Max acceptable staleness of market data (ms)
+MAX_LATENCY_MS = 500     # Max acceptable staleness of market data (ms)
 SCAN_INTERVAL_S = 5      # Seconds between full market scans
 MAX_POSITION_USDC = 50   # Max size per trade in USDC
 MIN_LIQUIDITY_USDC = 500 # Minimum market liquidity to consider
