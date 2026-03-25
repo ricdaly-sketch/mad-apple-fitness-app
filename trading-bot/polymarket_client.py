@@ -1,7 +1,6 @@
 """Thin wrapper around the Polymarket CLOB REST API."""
 
 import time
-import os
 import requests
 from typing import Optional
 from config import CLOB_BASE_URL, MAX_LATENCY_MS
@@ -9,9 +8,14 @@ from config import CLOB_BASE_URL, MAX_LATENCY_MS
 
 class PolymarketClient:
     def __init__(self, api_key: str, api_secret: str, passphrase: str):
-        self.api_key = api_key
-        self.api_secret = api_secret
-        self.passphrase = passphrase
+        if not all([api_key, api_secret, passphrase]):
+            raise ValueError(
+                "POLY_API_KEY, POLY_API_SECRET, and POLY_API_PASSPHRASE must all be set. "
+                "Check your .env file."
+            )
+        self._api_key = api_key
+        self._api_secret = api_secret
+        self._passphrase = passphrase
         self.session = requests.Session()
         self.session.headers.update({
             "POLY_API_KEY": api_key,
@@ -53,14 +57,20 @@ class PolymarketClient:
             "token_id": token_id,
             "price": price,
             "size": size,
-            "side": side,  # "BUY" or "SELL"
+            "side": side,
             "type": "GTC",
         }
         resp = self.session.post(f"{CLOB_BASE_URL}/order", json=payload, timeout=5)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        if data.get("status") not in ("matched", "live", "delayed"):
+            raise RuntimeError(f"Order rejected by exchange: {data}")
+        return data
 
     def get_balance(self) -> float:
         """Return available USDC balance."""
         data = self._get("/balance")
-        return float(data.get("balance", 0))
+        try:
+            return float(data["balance"])
+        except (KeyError, ValueError, TypeError) as e:
+            raise RuntimeError(f"Unexpected balance response: {data}") from e

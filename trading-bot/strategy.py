@@ -1,8 +1,11 @@
 """Arbitrage / mispricing detection strategy."""
 
+import logging
 from dataclasses import dataclass
 from typing import Optional
 from config import MIN_EDGE, MIN_LIQUIDITY_USDC
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -11,46 +14,48 @@ class Opportunity:
     market_question: str
     token_id: str
     outcome: str
-    market_price: float      # Current best ask on Polymarket
-    fair_prob: float         # Our estimated fair probability
-    edge: float              # fair_prob - market_price
+    market_price: float
+    fair_prob: float
+    edge: float
     liquidity_usdc: float
 
 
+def _safe_price(value) -> Optional[float]:
+    """Parse a price from untrusted API data. Must be in (0, 1]."""
+    try:
+        result = float(value)
+        if not (0 < result <= 1):
+            return None
+        return result
+    except (TypeError, ValueError):
+        return None
+
+
 def estimate_fair_probability(market: dict, outcome: str) -> Optional[float]:
-    """
-    Estimate fair probability for an outcome.
-
-    This is the core alpha-generation logic. A real implementation
-    would use:
-      - External data feeds (news, polls, resolution criteria)
-      - ML models trained on historical market data
-      - Complementary market prices (correlated markets)
-
-    For now we use the simple heuristic: if both YES and NO tokens
-    are trading, the sum should be ~1.0. If it deviates, one side
-    is mispriced. We use the complement of the opposing token price.
-    """
     outcomes = market.get("tokens", [])
     if len(outcomes) != 2:
         return None
 
-    prices = {t["outcome"]: float(t.get("price", 0)) for t in outcomes}
-    yes_price = prices.get("Yes", prices.get("YES", None))
-    no_price = prices.get("No", prices.get("NO", None))
+    prices = {}
+    for t in outcomes:
+        price = _safe_price(t.get("price"))
+        if price is not None:
+            prices[t.get("outcome", "")] = price
+
+    yes_price = prices.get("Yes", prices.get("YES"))
+    no_price = prices.get("No", prices.get("NO"))
 
     if yes_price is None or no_price is None:
         return None
 
-    total = yes_price + no_price
-    if total <= 0:
-        return None
-
-    # Normalise: if sum != 1, markets are mispriced relative to each other
     if outcome in ("Yes", "YES"):
-        return 1.0 - no_price   # implied fair YES prob
+        fair = 1.0 - no_price
     else:
-        return 1.0 - yes_price  # implied fair NO prob
+        fair = 1.0 - yes_price
+
+    if not (0 < fair <= 1):
+        return None
+    return fair
 
 
 def find_opportunities(markets: list[dict], orderbooks: dict[str, dict]) -> list[Opportunity]:
@@ -61,8 +66,15 @@ def find_opportunities(markets: list[dict], orderbooks: dict[str, dict]) -> list
         if market.get("closed") or not market.get("active"):
             continue
 
-        liquidity = float(market.get("volume", 0))
+        try:
+            liquidity = float(market.get("volume", 0))
+        except (TypeError, ValueError):
+            continue
         if liquidity < MIN_LIQUIDITY_USDC:
+            continue
+
+        condition_id = market.get("condition_id")
+        if not condition_id:
             continue
 
         for token in market.get("tokens", []):
@@ -83,7 +95,7 @@ def find_opportunities(markets: list[dict], orderbooks: dict[str, dict]) -> list
             edge = fair_prob - best_ask
             if edge >= MIN_EDGE:
                 opportunities.append(Opportunity(
-                    market_id=market["condition_id"],
+                    market_id=condition_id,
                     market_question=market.get("question", ""),
                     token_id=token_id,
                     outcome=outcome,
@@ -93,7 +105,6 @@ def find_opportunities(markets: list[dict], orderbooks: dict[str, dict]) -> list
                     liquidity_usdc=liquidity,
                 ))
 
-    # Rank by edge descending
     return sorted(opportunities, key=lambda o: o.edge, reverse=True)
 
 
@@ -101,4 +112,10 @@ def _best_ask(book: dict) -> Optional[float]:
     asks = book.get("asks", [])
     if not asks:
         return None
-    return float(min(asks, key=lambda a: float(a["price"]))["price"])
+    try:
+        price = float(min(asks, key=lambda a: float(a["price"]))["price"])
+    except (TypeError, ValueError, KeyError):
+        return None
+    if not (0 < price <= 1):
+        return None
+    return price

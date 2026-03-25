@@ -3,6 +3,7 @@
 import argparse
 import logging
 import os
+import sys
 import time
 from dotenv import load_dotenv
 import colorlog
@@ -11,6 +12,8 @@ from config import SCAN_INTERVAL_S
 from polymarket_client import PolymarketClient
 from strategy import find_opportunities
 from trader import Trader
+
+MAX_PAGINATION_PAGES = 100
 
 
 def setup_logging() -> None:
@@ -32,7 +35,7 @@ def setup_logging() -> None:
 def fetch_all_markets(client: PolymarketClient) -> list[dict]:
     markets = []
     cursor = ""
-    while True:
+    for _ in range(MAX_PAGINATION_PAGES):
         page = client.get_markets(next_cursor=cursor)
         markets.extend(page.get("data", []))
         cursor = page.get("next_cursor", "")
@@ -55,11 +58,23 @@ def main() -> None:
     setup_logging()
     log = logging.getLogger(__name__)
 
-    client = PolymarketClient(
-        api_key=os.getenv("POLY_API_KEY", ""),
-        api_secret=os.getenv("POLY_API_SECRET", ""),
-        passphrase=os.getenv("POLY_API_PASSPHRASE", ""),
-    )
+    if not paper_mode:
+        missing = [k for k in ("POLY_API_KEY", "POLY_API_SECRET", "POLY_API_PASSPHRASE", "PRIVATE_KEY")
+                   if not os.getenv(k)]
+        if missing:
+            log.critical(f"Live mode requires these env vars: {missing}")
+            sys.exit(1)
+
+    try:
+        client = PolymarketClient(
+            api_key=os.getenv("POLY_API_KEY", ""),
+            api_secret=os.getenv("POLY_API_SECRET", ""),
+            passphrase=os.getenv("POLY_API_PASSPHRASE", ""),
+        )
+    except ValueError as exc:
+        log.critical(str(exc))
+        sys.exit(1)
+
     trader = Trader(client, paper=paper_mode)
 
     mode_label = "PAPER" if paper_mode else "LIVE"
@@ -74,7 +89,6 @@ def main() -> None:
             markets = fetch_all_markets(client)
             log.info(f"Loaded {len(markets)} active markets")
 
-            # Fetch orderbooks for all tokens
             orderbooks: dict[str, dict] = {}
             for market in markets:
                 for token in market.get("tokens", []):
@@ -85,22 +99,24 @@ def main() -> None:
                         except Exception:
                             pass
 
-            # Detect opportunities
             opportunities = find_opportunities(markets, orderbooks)
 
             if opportunities:
-                log.info(f"Found {len(opportunities)} arbitrage windows — executing high-confidence trades")
+                log.info(f"Found {len(opportunities)} arbitrage windows - executing high-confidence trades")
                 for opp in opportunities:
                     trader.open_position(opp)
             else:
                 log.info("No opportunities above min edge threshold")
 
-            # Check existing positions for exit
-            current_prices = {
-                tid: (book.get("bids") or [{}])[0].get("price", 0)
-                for tid, book in orderbooks.items()
-            }
-            trader.check_and_close_positions({k: float(v) for k, v in current_prices.items() if v})
+            current_prices: dict[str, float] = {}
+            for tid, book in orderbooks.items():
+                bids = book.get("bids") or []
+                if bids:
+                    try:
+                        current_prices[tid] = float(bids[0]["price"])
+                    except (KeyError, ValueError, TypeError):
+                        pass
+            trader.check_and_close_positions(current_prices)
 
             log.info(trader.summary())
 

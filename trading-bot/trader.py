@@ -16,8 +16,8 @@ class Position:
     market_question: str
     outcome: str
     entry_price: float
-    size: float                    # USDC spent
-    shares: float                  # tokens bought
+    size: float
+    shares: float
     opened_at: datetime = field(default_factory=datetime.utcnow)
     closed_at: Optional[datetime] = None
     exit_price: Optional[float] = None
@@ -35,29 +35,34 @@ class Trader:
         self.positions: list[Position] = []
         self.realised_pnl: float = 0.0
 
-    # ------------------------------------------------------------------
-    # Open
-    # ------------------------------------------------------------------
     def open_position(self, opp: Opportunity) -> Optional[Position]:
         if self._already_holding(opp.token_id):
             return None
 
-        size = min(MAX_POSITION_USDC, opp.liquidity_usdc * 0.05)  # max 5% of liquidity
+        if opp.market_price <= 0:
+            log.warning(f"Skipping opportunity with invalid price {opp.market_price}")
+            return None
+
+        size = min(MAX_POSITION_USDC, opp.liquidity_usdc * 0.05)
         shares = size / opp.market_price
 
-        result = self.client.place_order(
-            token_id=opp.token_id,
-            side="BUY",
-            price=opp.market_price,
-            size=size,
-            paper=self.paper,
-        )
+        try:
+            self.client.place_order(
+                token_id=opp.token_id,
+                side="BUY",
+                price=opp.market_price,
+                size=size,
+                paper=self.paper,
+            )
+        except Exception as exc:
+            log.error(f"BUY order failed for {opp.token_id}: {exc}")
+            return None
 
         tag = "[PAPER]" if self.paper else "[LIVE]"
         log.info(
             f"{tag} BUY  {opp.outcome:4s} @ {opp.market_price:.3f} "
             f"| fair={opp.fair_prob:.3f} edge={opp.edge:.3f} "
-            f"| ${size:.2f} → {shares:.1f} shares "
+            f"| ${size:.2f} -> {shares:.1f} shares "
             f"| {opp.market_question[:60]}"
         )
 
@@ -72,9 +77,6 @@ class Trader:
         self.positions.append(pos)
         return pos
 
-    # ------------------------------------------------------------------
-    # Close / Hedge
-    # ------------------------------------------------------------------
     def check_and_close_positions(self, current_prices: dict[str, float]) -> None:
         for pos in self.positions:
             if not pos.is_open:
@@ -82,19 +84,23 @@ class Trader:
             current_price = current_prices.get(pos.token_id)
             if current_price is None:
                 continue
-
             edge_remaining = current_price - pos.entry_price
             if edge_remaining <= TAKE_PROFIT_EDGE:
                 self._close_position(pos, current_price)
 
     def _close_position(self, pos: Position, exit_price: float) -> None:
-        self.client.place_order(
-            token_id=pos.token_id,
-            side="SELL",
-            price=exit_price,
-            size=pos.shares,
-            paper=self.paper,
-        )
+        try:
+            self.client.place_order(
+                token_id=pos.token_id,
+                side="SELL",
+                price=exit_price,
+                size=pos.shares,
+                paper=self.paper,
+            )
+        except Exception as exc:
+            log.error(f"SELL order failed for {pos.token_id}: {exc} — position remains open")
+            return  # Do NOT mark closed if the order failed
+
         pos.exit_price = exit_price
         pos.closed_at = datetime.utcnow()
         pnl = (exit_price - pos.entry_price) * pos.shares
@@ -109,9 +115,6 @@ class Trader:
             f"| {pos.market_question[:60]}"
         )
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
     def _already_holding(self, token_id: str) -> bool:
         return any(p.token_id == token_id and p.is_open for p in self.positions)
 
