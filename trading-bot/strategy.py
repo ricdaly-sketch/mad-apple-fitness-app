@@ -55,8 +55,11 @@ def estimate_fair_probability(market: dict, outcome: str) -> Optional[float]:
 
 
 def find_opportunities(markets: list[dict]) -> list["Opportunity"]:
-    """Scan markets using embedded token prices — no extra API calls needed."""
+    """Scan markets using embedded token prices."""
     opportunities = []
+    skipped_liquidity = 0
+    skipped_price = 0
+    checked = 0
 
     for market in markets:
         if market.get("closed") or not market.get("active"):
@@ -66,7 +69,9 @@ def find_opportunities(markets: list[dict]) -> list["Opportunity"]:
             liquidity = float(market.get("volume", 0))
         except (TypeError, ValueError):
             continue
+
         if liquidity < MIN_LIQUIDITY_USDC:
+            skipped_liquidity += 1
             continue
 
         condition_id = market.get("condition_id")
@@ -81,12 +86,14 @@ def find_opportunities(markets: list[dict]) -> list["Opportunity"]:
 
             market_price = _safe_price(token.get("price"))
             if market_price is None:
+                skipped_price += 1
                 continue
 
             fair_prob = estimate_fair_probability(market, outcome)
             if fair_prob is None:
                 continue
 
+            checked += 1
             edge = fair_prob - market_price
             if edge >= MIN_EDGE:
                 opportunities.append(Opportunity(
@@ -100,4 +107,8 @@ def find_opportunities(markets: list[dict]) -> list["Opportunity"]:
                     liquidity_usdc=liquidity,
                 ))
 
+    log.info(
+        f"Checked {checked} tokens | skipped low-liquidity={skipped_liquidity} "
+        f"no-price={skipped_price} | found {len(opportunities)} opportunities"
+    )
     return sorted(opportunities, key=lambda o: o.edge, reverse=True)
